@@ -1,8 +1,8 @@
 # SystemVerilog UVM Verification IP Collection
 
 ![Simulator](https://img.shields.io/badge/Simulator-QuestaSim%202025.2-1f4e79)
-![SPI](https://img.shields.io/badge/SPI%20--DUT-20%2F20%20passing-c55a11)
-![UART](https://img.shields.io/badge/UART%20--DUT-40%2F40%20passing-1f4e79)
+![SPI](https://img.shields.io/badge/SPI%20--DUT-c55a11)
+![UART](https://img.shields.io/badge/UART%20--DUT-1f4e79)
 ![License](https://img.shields.io/badge/License-Apache%202.0-c55a11)
 
 Reusable SPI and UART UVM Verification IPs (UVCs). Both support master/slave
