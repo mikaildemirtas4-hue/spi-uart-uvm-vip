@@ -1,107 +1,65 @@
-# SPI UVM VIP (Verification IP)
+# SPI VIP — DUT Integration Example
 
-Her projede import edip kullanabileceğin, jenerik ve konfigüre edilebilir bir
-SPI UVC (Universal Verification Component). Master ve slave rollerinin ikisini
-de destekler, active/passive olarak konfigüre edilebilir, 4 SPI modunun
-tamamını (CPOL/CPHA kombinasyonları) doğru zamanlamayla üretir.
+Same idea as `example_real_dut/` in the UART VIP: an end-to-end example
+wiring `spi_vip` to a synthesizable DUT (an SPI slave core).
 
-## Dizin yapısı
+## Directory structure
 
 ```
-spi_vip/
-├── spi_if.sv                 # Fiziksel SPI arayüzü (sclk, mosi, miso, cs_n[])
-├── spi_vip_pkg.sv            # Tek import noktası - tüm VIP burada toplanır
-├── spi_transaction.sv        # Sequence item (tek kelimelik full-duplex transfer)
-├── spi_config.sv             # Agent konfigürasyonu (mod, rol, timing, vs.)
-├── spi_callback.sv           # Callback taban sınıfı (VIP koduna dokunmadan hook)
-├── spi_coverage.sv           # Functional coverage (mode x width cross dahil)
-├── spi_sequencer.sv
-├── spi_driver_master.sv      # Master rolü - sclk/mosi/cs_n üretir, miso okur
-├── spi_driver_slave.sv       # Slave rolü - sclk/cs_n'i izler, miso üretir
-├── spi_monitor.sv            # Pasif izleyici - her iki rol için de çalışır
-├── spi_agent.sv               # Config'e göre driver/sequencer/coverage kurar
-├── seq_lib/
-│   └── spi_seq_lib.sv        # Hazır sequence kütüphanesi
-└── example/                  # Örnek kullanım (gerçek proje şablonu)
-    ├── spi_env.sv
-    ├── spi_loopback_test.sv
-    ├── spi_example_pkg.sv
-    └── tb_top.sv
+example_real_dut/
+├── rtl/
+│   └── spi_slave_core.sv   # The DUT - fixed Mode 0, synthesizable SPI slave
+├── tb/
+│   ├── spi_reg_if.sv        # Clocking interface for the DUT's parallel tx_data/rx_data port
+│   ├── spi_reg_bfm.sv       # A small BFM using that interface (NOT part of the VIP)
+│   ├── spi_dut_env.sv       # Environment wiring the VIP (master role) to the DUT's pins
+│   ├── spi_dut_test.sv      # Test verifying both DUT TX and RX in a single full-duplex transfer
+│   ├── spi_dut_pkg.sv
+│   └── tb_top.sv            # <-- THE integration point, DUT instantiation happens here
+└── sim/
+    └── questa.do
 ```
 
-> **Gerçek bir RTL DUT'a nasıl bağlanır?** `example_real_dut/` klasörüne
-> bak - sentezlenebilir bir SPI slave çekirdeği + onu VIP'e bağlayan tam
-> bir testbench + Questa `.do` betiği içeriyor. `example/` sadece VIP-to-VIP
-> loopback; gerçek entegrasyonu görmek için `example_real_dut/README.md`'yi
-> oku.
+## Why SPI is different from UART here: two-way verification in one pass
 
-## Derleme sırası
+Since UART needs two separate wires, the DUT's receiver and transmitter
+were tested separately. SPI, by nature, is **full-duplex** - MOSI and MISO
+flow at the same time, on the same clock. So `spi_dut_test.sv` does this
+on every transfer:
 
-`` `include `` tabanlı dosyalar ayrı derlenmez; simülatöre onları bulması
-için `+incdir+` ile yol vermen yeterli. Sıra önemli:
+1. `reg_bfm.load_tx_byte(...)` preloads the byte the DUT will drive on
+   MISO for the next transfer.
+2. The VIP master sends a random byte on MOSI via `spi_single_transfer_seq`.
+3. At the same time, `reg_bfm.wait_for_rx_byte(...)` reads back what the
+   DUT decoded from MOSI.
+4. A single transfer checks both "is the DUT's receiver correct" and "is
+   the DUT's transmitter correct".
+
+## Running it
 
 ```bash
-# Örnek: Questa/VCS tarzı komut satırı
-vlog -sv +incdir+$UVM_HOME/src $UVM_HOME/src/uvm_pkg.sv \
-     spi_vip/spi_if.sv \
-     +incdir+spi_vip spi_vip/spi_vip_pkg.sv \
-     +incdir+spi_vip/example spi_vip/example/spi_example_pkg.sv \
-     spi_vip/example/tb_top.sv
-
-vsim -c tb_top +UVM_TESTNAME=spi_loopback_test -do "run -all"
+cd example_real_dut/sim
+vsim -c -do questa.do
 ```
 
-## Kendi projene entegre etmek
+## About the DUT
 
-1. `spi_vip/` klasörünü olduğu gibi projene kopyala (`example/` klasörü hariç -
-   o sadece referans, VIP'in bir parçası değil).
-2. Kendi env'inde:
-   ```systemverilog
-   spi_config cfg = spi_config::type_id::create("cfg");
-   cfg.vif       = <senin virtual interface handle'ın>;
-   cfg.is_master = 1;              // ya da 0, DUT slave mi master mı test ettiğine göre
-   cfg.is_active = UVM_ACTIVE;     // ya da UVM_PASSIVE, sadece izlemek istiyorsan
-   cfg.mode      = SPI_MODE_0;     // DUT hangi modu bekliyorsa onu seç
-   cfg.num_cs    = 2;              // birden fazla slave select hattın varsa
-   uvm_config_db#(spi_config)::set(this, "my_agent*", "cfg", cfg);
+`spi_slave_core` is a fixed Mode 0 (CPOL=0, CPHA=0), 8-bit, MSB-first SPI
+slave. All SPI pins (`sclk`, `mosi`, `cs_n`) are treated as asynchronous
+and synchronized into the system clock (`clk`) - the standard approach for
+not using an external signal directly as a clock/edge source in a real
+design. `clk` needs to run at least ~5-10x faster than `sclk` (50 MHz clk
+/ 5 MHz sclk = 10x in the example).
 
-   my_agent = spi_agent::type_id::create("my_agent", this);
-   ```
-3. DUT bir SLAVE ise -> `cfg.is_master = 1` yapıp VIP'i master rolünde kullan.
-   DUT bir MASTER ise -> `cfg.is_master = 0` yapıp VIP'i slave rolünde kullan
-   ve `spi_slave_response_seq` ile cevap verilerini besle.
-4. Sadece gözlem istiyorsan (örn. DUT'un kendi master/slave VIP'i zaten
-   varken sadece coverage toplamak için) `cfg.is_active = UVM_PASSIVE` yap -
-   agent sadece monitor + coverage kurar, driver/sequencer oluşturmaz.
+The parallel port is double-buffered: `tx_load` can safely be triggered
+even mid-transfer, since the DUT only makes the new value "active" at the
+start of the next transfer (when `cs_n` falls) - no mid-transfer
+corruption.
 
-## Callback ile genişletme (VIP kaynağına dokunmadan)
+## Adapting this to your own DUT
 
-```systemverilog
-class my_spi_cb extends spi_callback;
-  `uvm_object_utils(my_spi_cb)
-  function new(string name = "my_spi_cb"); super.new(name); endfunction
-
-  virtual task post_transaction(uvm_component originator, spi_transaction tr);
-    `uvm_info("MY_CB", $sformatf("gördüm: %s", tr.convert2string()), UVM_LOW)
-  endtask
-endclass
-
-// test/env içinde:
-my_spi_cb cb = my_spi_cb::type_id::create("cb");
-uvm_callbacks#(spi_monitor, spi_callback)::add(my_agent.monitor, cb);
-```
-
-## Notlar / bilinçli tasarım kararları
-
-- `spi_transaction` alan isimleri **bus-mutlak**: `mosi_data` her zaman MOSI
-  telindeki veriyi, `miso_data` her zaman MISO telindeki veriyi temsil eder.
-  Master sequence'leri `mosi_data`'yı doldurur, slave sequence'leri
-  `miso_data`'yı doldurur - fiziksel tele bakınca kafa karıştırmayan tek
-  yaklaşım bu.
-- Monitor kelime genişliğini varsaymaz; CS düşene kadar biti sayar (gerçek
-  SPI'da protokol seviyesinde framing yoktur).
-- Master sürücüsündeki tüm zamanlama alanları (`clk_period_ns`,
-  `cs_setup_time_ns`, ...) `spi_config` üzerinden proje bazında ayarlanabilir.
-- `SPI_MAX_WIDTH` (`spi_vip_pkg.sv` içinde, varsayılan 32) VIP'in destekleyeceği
-  azami kelime genişliğidir; her transfer bundan küçük veya eşit herhangi bir
-  genişlik kullanabilir (`spi_transaction.num_bits`).
+Same checklist as `uart_vip/example_real_dut/README.md`: replace the DUT
+instantiation in `tb_top.sv` with your own module - the only thing that
+matters is wiring four pins (`sclk`/`mosi`/`miso`/`cs_n`) to the VIP's
+`spi_if` signals. If your DUT's mode isn't Mode 0, update `m_cfg.mode` in
+`spi_dut_env.sv`.
